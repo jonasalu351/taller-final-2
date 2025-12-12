@@ -1,0 +1,764 @@
+include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+
+// ==================== ESTRUCTURAS DE DATOS ====================
+
+// Nodo de la cola FIFO (Lista de Espera de Envíos)
+struct Pedido {
+    char nombre_destino[30];  // ej: "Nuquí"
+    int cantidad_solicitada;  // ej: 200
+    struct Pedido* sig;       // puntero siguiente
+};
+
+// Nodo del árbol AVL (Calendario de vencimientos)
+struct NodoAVL {
+    int fecha_vencimiento;       // clave en formato AAAAMMDD
+    int stock_total;             // cantidad disponible
+    char nombre_producto[30];    // Atún, Carne, etc.
+    
+    struct Pedido* cabeza_pedidos; // puntero a la cabeza de la cola FIFO
+    struct Pedido* cola_pedidos;   // puntero a la cola de la cola FIFO (para inserción eficiente)
+    
+    int altura;                  // para balanceo
+    struct NodoAVL* izq;
+    struct NodoAVL* der;
+};
+
+// ==================== PROTOTIPOS DE FUNCIONES ====================
+
+// Funciones del Árbol AVL
+int altura(struct NodoAVL* nodo);
+int max(int a, int b);
+int obtenerBalance(struct NodoAVL* nodo);
+struct NodoAVL* rotacionDerecha(struct NodoAVL* y);
+struct NodoAVL* rotacionIzquierda(struct NodoAVL* x);
+struct NodoAVL* crearNodoAVL(int fecha, int stock, const char* producto);
+struct NodoAVL* insertarAVL(struct NodoAVL* nodo, int fecha, int stock, const char* producto);
+struct NodoAVL* encontrarMinimo(struct NodoAVL* nodo);
+struct NodoAVL* eliminarAVL(struct NodoAVL* raiz, int fecha);
+struct NodoAVL* buscarFecha(struct NodoAVL* raiz, int fecha);
+
+// Funciones de la Cola FIFO
+void encolarPedido(struct NodoAVL* nodo, const char* destino, int cantidad);
+int cancelarPedido(struct NodoAVL* nodo, const char* destino, int cantidad);
+void liberarColaFIFO(struct Pedido* cabeza);
+void mostrarCola(struct Pedido* cabeza);
+
+// Funciones de utilidad
+int validarFecha(int fecha);
+void limpiarBuffer();
+void convertirAMayusculas(char* str);
+struct NodoAVL* encontrarFechaMasCercana(struct NodoAVL* raiz);
+
+// Funciones del menú
+void mostrarMenu();
+void recepcionMercancia(struct NodoAVL** raiz);
+void registrarPedidoDespacho(struct NodoAVL* raiz);
+void cancelarLoteCompleto(struct NodoAVL** raiz);
+void cancelarPedidoEspecifico(struct NodoAVL* raiz);
+void reporteEstado(struct NodoAVL* raiz);
+void liberarArbol(struct NodoAVL* nodo);
+
+// ==================== IMPLEMENTACIÓN DEL ÁRBOL AVL ====================
+
+// Obtener altura de un nodo
+int altura(struct NodoAVL* nodo) {
+    if (nodo == NULL)
+        return 0;
+    return nodo->altura;
+}
+
+// Encontrar máximo entre dos números
+int max(int a, int b) {
+    return (a > b) ? a : b;
+}
+
+// Calcular factor de balance de un nodo
+int obtenerBalance(struct NodoAVL* nodo) {
+    if (nodo == NULL)
+        return 0;
+    return altura(nodo->izq) - altura(nodo->der);
+}
+
+// Rotación simple a la derecha
+struct NodoAVL* rotacionDerecha(struct NodoAVL* y) {
+    struct NodoAVL* x = y->izq;
+    struct NodoAVL* T2 = x->der;
+
+    // Realizar rotación
+    x->der = y;
+    y->izq = T2;
+
+    // Actualizar alturas
+    y->altura = max(altura(y->izq), altura(y->der)) + 1;
+    x->altura = max(altura(x->izq), altura(x->der)) + 1;
+
+    return x;
+}
+
+// Rotación simple a la izquierda
+struct NodoAVL* rotacionIzquierda(struct NodoAVL* x) {
+    struct NodoAVL* y = x->der;
+    struct NodoAVL* T2 = y->izq;
+
+    // Realizar rotación
+    y->izq = x;
+    x->der = T2;
+
+    // Actualizar alturas
+    x->altura = max(altura(x->izq), altura(x->der)) + 1;
+    y->altura = max(altura(y->izq), altura(y->der)) + 1;
+
+    return y;
+}
+
+// Crear un nuevo nodo AVL con cola FIFO vacía
+struct NodoAVL* crearNodoAVL(int fecha, int stock, const char* producto) {
+    struct NodoAVL* nodo = (struct NodoAVL*)malloc(sizeof(struct NodoAVL));
+    if (nodo == NULL) {
+        printf("Error: Memoria insuficiente.\n");
+        return NULL;
+    }
+    
+    nodo->fecha_vencimiento = fecha;
+    nodo->stock_total = stock;
+    strncpy(nodo->nombre_producto, producto, 29);
+    nodo->nombre_producto[29] = '\0';
+    
+    nodo->cabeza_pedidos = NULL;
+    nodo->cola_pedidos = NULL;
+    
+    nodo->altura = 1;
+    nodo->izq = NULL;
+    nodo->der = NULL;
+    
+    return nodo;
+}
+
+// Insertar un nuevo nodo en el árbol AVL (balanceado)
+struct NodoAVL* insertarAVL(struct NodoAVL* nodo, int fecha, int stock, const char* producto) {
+    // 1. Inserción normal en ABB
+    if (nodo == NULL)
+        return crearNodoAVL(fecha, stock, producto);
+
+    if (fecha < nodo->fecha_vencimiento)
+        nodo->izq = insertarAVL(nodo->izq, fecha, stock, producto);
+    else if (fecha > nodo->fecha_vencimiento)
+        nodo->der = insertarAVL(nodo->der, fecha, stock, producto);
+    else {
+        // Fecha ya existe (no debería llegar aquí si se validó antes)
+        return nodo;
+    }
+
+    // 2. Actualizar altura del nodo actual
+    nodo->altura = 1 + max(altura(nodo->izq), altura(nodo->der));
+
+    // 3. Obtener factor de balance para verificar si está desbalanceado
+    int balance = obtenerBalance(nodo);
+
+    // Caso Izquierda Izquierda
+    if (balance > 1 && fecha < nodo->izq->fecha_vencimiento)
+        return rotacionDerecha(nodo);
+
+    // Caso Derecha Derecha
+    if (balance < -1 && fecha > nodo->der->fecha_vencimiento)
+        return rotacionIzquierda(nodo);
+
+    // Caso Izquierda Derecha
+    if (balance > 1 && fecha > nodo->izq->fecha_vencimiento) {
+        nodo->izq = rotacionIzquierda(nodo->izq);
+        return rotacionDerecha(nodo);
+    }
+
+    // Caso Derecha Izquierda
+    if (balance < -1 && fecha < nodo->der->fecha_vencimiento) {
+        nodo->der = rotacionDerecha(nodo->der);
+        return rotacionIzquierda(nodo);
+    }
+
+    return nodo;
+}
+
+// Encontrar el nodo con valor mínimo (más a la izquierda)
+struct NodoAVL* encontrarMinimo(struct NodoAVL* nodo) {
+    struct NodoAVL* actual = nodo;
+    while (actual->izq != NULL)
+        actual = actual->izq;
+    return actual;
+}
+
+// Eliminar un nodo del árbol AVL (balanceado)
+struct NodoAVL* eliminarAVL(struct NodoAVL* raiz, int fecha) {
+    if (raiz == NULL)
+        return raiz;
+
+    // 1. Búsqueda del nodo a eliminar
+    if (fecha < raiz->fecha_vencimiento)
+        raiz->izq = eliminarAVL(raiz->izq, fecha);
+    else if (fecha > raiz->fecha_vencimiento)
+        raiz->der = eliminarAVL(raiz->der, fecha);
+    else {
+        // Nodo encontrado
+        if ((raiz->izq == NULL) || (raiz->der == NULL)) {
+            // Caso con 0 o 1 hijo
+            struct NodoAVL* temp = raiz->izq ? raiz->izq : raiz->der;
+
+            if (temp == NULL) {
+                // Sin hijos
+                temp = raiz;
+                raiz = NULL;
+            } else {
+                // Un hijo
+                *raiz = *temp; // Copiar contenido del hijo
+            }
+            free(temp);
+        } else {
+            // Caso con 2 hijos: obtener sucesor in-order (mínimo del subárbol derecho)
+            struct NodoAVL* temp = encontrarMinimo(raiz->der);
+
+            // Copiar datos del sucesor
+            raiz->fecha_vencimiento = temp->fecha_vencimiento;
+            raiz->stock_total = temp->stock_total;
+            strcpy(raiz->nombre_producto, temp->nombre_producto);
+            
+            // Liberar la cola FIFO antigua (si existiera)
+            liberarColaFIFO(raiz->cabeza_pedidos);
+            raiz->cabeza_pedidos = NULL;
+            raiz->cola_pedidos = NULL;
+            
+            // Copiar cola FIFO del sucesor (si existiera)
+            // Nota: En nuestro caso, al eliminar un lote, liberamos toda su cola
+            // Esta parte es para la lógica interna del AVL durante reemplazo
+            
+            // Eliminar el sucesor
+            raiz->der = eliminarAVL(raiz->der, temp->fecha_vencimiento);
+        }
+    }
+
+    // Si el árbol tenía solo un nodo
+    if (raiz == NULL)
+        return raiz;
+
+    // 2. Actualizar altura
+    raiz->altura = 1 + max(altura(raiz->izq), altura(raiz->der));
+
+    // 3. Obtener factor de balance
+    int balance = obtenerBalance(raiz);
+
+    // 4. Rebalancear si es necesario
+    // Caso Izquierda Izquierda
+    if (balance > 1 && obtenerBalance(raiz->izq) >= 0)
+        return rotacionDerecha(raiz);
+
+    // Caso Izquierda Derecha
+    if (balance > 1 && obtenerBalance(raiz->izq) < 0) {
+        raiz->izq = rotacionIzquierda(raiz->izq);
+        return rotacionDerecha(raiz);
+    }
+
+    // Caso Derecha Derecha
+    if (balance < -1 && obtenerBalance(raiz->der) <= 0)
+        return rotacionIzquierda(raiz);
+
+    // Caso Derecha Izquierda
+    if (balance < -1 && obtenerBalance(raiz->der) > 0) {
+        raiz->der = rotacionDerecha(raiz->der);
+        return rotacionIzquierda(raiz);
+    }
+
+    return raiz;
+}
+
+// Buscar un nodo por fecha
+struct NodoAVL* buscarFecha(struct NodoAVL* raiz, int fecha) {
+    if (raiz == NULL || raiz->fecha_vencimiento == fecha)
+        return raiz;
+
+    if (fecha < raiz->fecha_vencimiento)
+        return buscarFecha(raiz->izq, fecha);
+
+    return buscarFecha(raiz->der, fecha);
+}
+
+// ==================== IMPLEMENTACIÓN DE LA COLA FIFO ====================
+
+// Agregar un pedido al final de la cola FIFO
+void encolarPedido(struct NodoAVL* nodo, const char* destino, int cantidad) {
+    if (nodo == NULL) return;
+    
+    struct Pedido* nuevoPedido = (struct Pedido*)malloc(sizeof(struct Pedido));
+    if (nuevoPedido == NULL) {
+        printf("Error: Memoria insuficiente para crear pedido.\n");
+        return;
+    }
+    
+    strncpy(nuevoPedido->nombre_destino, destino, 29);
+    nuevoPedido->nombre_destino[29] = '\0';
+    nuevoPedido->cantidad_solicitada = cantidad;
+    nuevoPedido->sig = NULL;
+    
+    // Si la cola está vacía
+    if (nodo->cabeza_pedidos == NULL) {
+        nodo->cabeza_pedidos = nuevoPedido;
+        nodo->cola_pedidos = nuevoPedido;
+    } else {
+        // Agregar al final
+        nodo->cola_pedidos->sig = nuevoPedido;
+        nodo->cola_pedidos = nuevoPedido;
+    }
+    
+    printf("Pedido registrado exitosamente.\n");
+}
+
+// Cancelar un pedido específico de la cola FIFO
+int cancelarPedido(struct NodoAVL* nodo, const char* destino, int cantidad) {
+    if (nodo == NULL || nodo->cabeza_pedidos == NULL) {
+        return 0; // No se encontró
+    }
+    
+    struct Pedido* actual = nodo->cabeza_pedidos;
+    struct Pedido* anterior = NULL;
+    
+    while (actual != NULL) {
+        if (strcmp(actual->nombre_destino, destino) == 0 && 
+            actual->cantidad_solicitada == cantidad) {
+            
+            // Pedido encontrado
+            if (anterior == NULL) {
+                // Es el primer pedido
+                nodo->cabeza_pedidos = actual->sig;
+                if (nodo->cabeza_pedidos == NULL) {
+                    nodo->cola_pedidos = NULL; // Cola vacía
+                }
+            } else {
+                anterior->sig = actual->sig;
+                if (actual->sig == NULL) {
+                    nodo->cola_pedidos = anterior; // Actualizar cola si era el último
+                }
+            }
+            
+            // Devolver stock
+            nodo->stock_total += cantidad;
+            
+            free(actual);
+            return 1; // Cancelación exitosa
+        }
+        
+        anterior = actual;
+        actual = actual->sig;
+    }
+    
+    return 0; // No se encontró el pedido
+}
+
+// Liberar toda la memoria de la cola FIFO
+void liberarColaFIFO(struct Pedido* cabeza) {
+    struct Pedido* actual = cabeza;
+    struct Pedido* siguiente;
+    
+    while (actual != NULL) {
+        siguiente = actual->sig;
+        free(actual);
+        actual = siguiente;
+    }
+}
+
+// Mostrar todos los pedidos en la cola FIFO
+void mostrarCola(struct Pedido* cabeza) {
+    struct Pedido* actual = cabeza;
+    int contador = 1;
+    
+    while (actual != NULL) {
+        printf("  %d. Destino: %s, Cantidad: %d\n", 
+               contador++, actual->nombre_destino, actual->cantidad_solicitada);
+        actual = actual->sig;
+    }
+}
+
+// ==================== FUNCIONES DE UTILIDAD ====================
+
+// Validar que una fecha tenga formato AAAAMMDD y sea válida
+int validarFecha(int fecha) {
+    int anio = fecha / 10000;
+    int mes = (fecha / 100) % 100;
+    int dia = fecha % 100;
+    
+    // Validaciones básicas
+    if (anio < 2000 || anio > 2100) return 0;
+    if (mes < 1 || mes > 12) return 0;
+    if (dia < 1 || dia > 31) return 0;
+    
+    // Validar días por mes (simplificado)
+    if (mes == 2 && dia > 29) return 0;
+    if ((mes == 4 || mes == 6 || mes == 9 || mes == 11) && dia > 30) return 0;
+    
+    return 1;
+}
+
+// Limpiar buffer de entrada
+void limpiarBuffer() {
+    int c;
+    while ((c = getchar()) != '\n' && c != EOF);
+}
+
+// Convertir string a mayúsculas
+void convertirAMayusculas(char* str) {
+    for (int i = 0; str[i]; i++) {
+        str[i] = toupper(str[i]);
+    }
+}
+
+// Encontrar el nodo con la fecha más cercana (menor fecha)
+struct NodoAVL* encontrarFechaMasCercana(struct NodoAVL* raiz) {
+    if (raiz == NULL) return NULL;
+    
+    struct NodoAVL* actual = raiz;
+    while (actual->izq != NULL) {
+        actual = actual->izq;
+    }
+    return actual;
+}
+
+// ==================== FUNCIONES DEL MENÚ ====================
+
+// Mostrar menú principal
+void mostrarMenu() {
+    printf("\n========== SISTEMA LOGISTICO - PUERTO DE BUENAVENTURA ==========\n");
+    printf("1. Recepcion de Mercancia (INSERTAR en AVL)\n");
+    printf("2. Registrar Pedido de Despacho (ENCOLAR en FIFO)\n");
+    printf("3. Cancelar Lote Completo (ELIMINACION EN AVL)\n");
+    printf("4. Cancelar un Pedido Especifico\n");
+    printf("5. Reporte de Estado (RECORRIDO IN-ORDER)\n");
+    printf("6. Salir\n");
+    printf("===============================================================\n");
+    printf("Seleccione una opcion: ");
+}
+
+// Opción 1: Recepción de Mercancía
+void recepcionMercancia(struct NodoAVL** raiz) {
+    int fecha, stock;
+    char producto[30];
+    
+    printf("\n--- RECEPCION DE MERCANCIA ---\n");
+    
+    // Solicitar fecha
+    printf("Ingrese fecha de vencimiento (AAAAMMDD): ");
+    if (scanf("%d", &fecha) != 1) {
+        printf("Error: Formato de fecha invalido.\n");
+        limpiarBuffer();
+        return;
+    }
+    
+    // Validar fecha
+    if (!validarFecha(fecha)) {
+        printf("Error: Fecha invalida. Use formato AAAAMMDD y valores validos.\n");
+        return;
+    }
+    
+    // Verificar si la fecha ya existe
+    if (buscarFecha(*raiz, fecha) != NULL) {
+        printf("No se puede procesar. Ya existe un lote con esa fecha.\n");
+        return;
+    }
+    
+    // Solicitar stock
+    printf("Ingrese cantidad disponible: ");
+    if (scanf("%d", &stock) != 1 || stock <= 0) {
+        printf("Error: Cantidad invalida. Debe ser un numero positivo.\n");
+        limpiarBuffer();
+        return;
+    }
+    
+    // Solicitar nombre del producto
+    printf("Ingrese nombre del producto: ");
+    limpiarBuffer();
+    fgets(producto, 30, stdin);
+    producto[strcspn(producto, "\n")] = '\0'; // Eliminar salto de línea
+    convertirAMayusculas(producto);
+    
+    // Insertar en el árbol AVL
+    *raiz = insertarAVL(*raiz, fecha, stock, producto);
+    printf("Lote registrado exitosamente.\n");
+}
+
+// Opción 2: Registrar Pedido de Despacho
+void registrarPedidoDespacho(struct NodoAVL* raiz) {
+    if (raiz == NULL) {
+        printf("\nNo hay lotes disponibles. Primero registre mercancia.\n");
+        return;
+    }
+    
+    // Encontrar lote con fecha más cercana a vencer
+    struct NodoAVL* loteMasCercano = encontrarFechaMasCercana(raiz);
+    
+    if (loteMasCercano == NULL) {
+        printf("Error: No se encontro lote disponible.\n");
+        return;
+    }
+    
+    printf("\n--- REGISTRAR PEDIDO DE DESPACHO ---\n");
+    printf("Lote seleccionado (mas cercano a vencer):\n");
+    printf("Producto: %s\n", loteMasCercano->nombre_producto);
+    printf("Fecha vencimiento: %d\n", loteMasCercano->fecha_vencimiento);
+    printf("Stock disponible: %d\n", loteMasCercano->stock_total);
+    
+    char destino[30];
+    int cantidad;
+    
+    // Solicitar destino
+    printf("Ingrese destino del pedido: ");
+    limpiarBuffer();
+    fgets(destino, 30, stdin);
+    destino[strcspn(destino, "\n")] = '\0';
+    convertirAMayusculas(destino);
+    
+    // Solicitar cantidad
+    printf("Ingrese cantidad solicitada: ");
+    if (scanf("%d", &cantidad) != 1 || cantidad <= 0) {
+        printf("Error: Cantidad invalida.\n");
+        limpiarBuffer();
+        return;
+    }
+    
+    // Registrar pedido en la cola FIFO del lote
+    encolarPedido(loteMasCercano, destino, cantidad);
+    
+    // Reducir stock (incluso si queda en negativo según reglas del negocio)
+    loteMasCercano->stock_total -= cantidad;
+    printf("Stock actualizado: %d\n", loteMasCercano->stock_total);
+}
+
+// Opción 3: Cancelar Lote Completo
+void cancelarLoteCompleto(struct NodoAVL** raiz) {
+    if (*raiz == NULL) {
+        printf("\nNo hay lotes registrados.\n");
+        return;
+    }
+    
+    int fecha;
+    printf("\n--- CANCELAR LOTE COMPLETO ---\n");
+    printf("Ingrese fecha del lote a cancelar (AAAAMMDD): ");
+    
+    if (scanf("%d", &fecha) != 1) {
+        printf("Error: Formato de fecha invalido.\n");
+        limpiarBuffer();
+        return;
+    }
+    
+    // Buscar el lote
+    struct NodoAVL* lote = buscarFecha(*raiz, fecha);
+    if (lote == NULL) {
+        printf("Error: No se encontro un lote con esa fecha.\n");
+        return;
+    }
+    
+    // Confirmar cancelación
+    printf("\nLote encontrado:\n");
+    printf("Producto: %s\n", lote->nombre_producto);
+    printf("Fecha: %d\n", lote->fecha_vencimiento);
+    printf("Stock: %d\n", lote->stock_total);
+    printf("Pedidos en cola: ");
+    
+    if (lote->cabeza_pedidos == NULL) {
+        printf("Ninguno\n");
+    } else {
+        printf("\n");
+        mostrarCola(lote->cabeza_pedidos);
+    }
+    
+    printf("\n¿Esta seguro de eliminar este lote? (S/N): ");
+    limpiarBuffer();
+    char confirmacion;
+    scanf("%c", &confirmacion);
+    
+    if (confirmacion == 'S' || confirmacion == 's') {
+        // Liberar memoria de la cola FIFO primero
+        liberarColaFIFO(lote->cabeza_pedidos);
+        
+        // Eliminar el nodo del árbol AVL
+        *raiz = eliminarAVL(*raiz, fecha);
+        printf("Lote cancelado exitosamente.\n");
+    } else {
+        printf("Cancelacion abortada.\n");
+    }
+}
+
+// Opción 4: Cancelar un Pedido Específico
+void cancelarPedidoEspecifico(struct NodoAVL* raiz) {
+    if (raiz == NULL) {
+        printf("\nNo hay lotes registrados.\n");
+        return;
+    }
+    
+    int fecha;
+    printf("\n--- CANCELAR PEDIDO ESPECIFICO ---\n");
+    printf("Ingrese fecha del lote (AAAAMMDD): ");
+    
+    if (scanf("%d", &fecha) != 1) {
+        printf("Error: Formato de fecha invalido.\n");
+        limpiarBuffer();
+        return;
+    }
+    
+    // Buscar el lote
+    struct NodoAVL* lote = buscarFecha(raiz, fecha);
+    if (lote == NULL) {
+        printf("Error: No se encontro un lote con esa fecha.\n");
+        return;
+    }
+    
+    if (lote->cabeza_pedidos == NULL) {
+        printf("Este lote no tiene pedidos en cola.\n");
+        return;
+    }
+    
+    printf("\nPedidos actuales en este lote:\n");
+    mostrarCola(lote->cabeza_pedidos);
+    
+    char destino[30];
+    int cantidad;
+    
+    // Solicitar datos del pedido a cancelar
+    printf("\nIngrese destino del pedido a cancelar: ");
+    limpiarBuffer();
+    fgets(destino, 30, stdin);
+    destino[strcspn(destino, "\n")] = '\0';
+    convertirAMayusculas(destino);
+    
+    printf("Ingrese cantidad del pedido a cancelar: ");
+    if (scanf("%d", &cantidad) != 1 || cantidad <= 0) {
+        printf("Error: Cantidad invalida.\n");
+        limpiarBuffer();
+        return;
+    }
+    
+    // Cancelar pedido
+    if (cancelarPedido(lote, destino, cantidad)) {
+        printf("Pedido cancelado exitosamente.\n");
+        printf("Stock actualizado: %d\n", lote->stock_total);
+    } else {
+        printf("Error: No se encontro el pedido especificado.\n");
+    }
+}
+
+// Función auxiliar para recorrido in-order (recursivo)
+void recorridoInOrder(struct NodoAVL* nodo) {
+    if (nodo != NULL) {
+        // Recorrer subárbol izquierdo (fechas más antiguas primero)
+        recorridoInOrder(nodo->izq);
+        
+        // Procesar nodo actual
+        printf("\nFecha: %d\n", nodo->fecha_vencimiento);
+        printf("Producto: %s\n", nodo->nombre_producto);
+        printf("Stock disponible: %d\n", nodo->stock_total);
+        
+        // Contar pedidos en la cola FIFO
+        int contadorPedidos = 0;
+        struct Pedido* actual = nodo->cabeza_pedidos;
+        while (actual != NULL) {
+            contadorPedidos++;
+            actual = actual->sig;
+        }
+        printf("Pedidos en cola FIFO: %d\n", contadorPedidos);
+        
+        // Mostrar pedidos si existen
+        if (contadorPedidos > 0) {
+            printf("Detalle de pedidos:\n");
+            mostrarCola(nodo->cabeza_pedidos);
+        }
+        
+        // Recorrer subárbol derecho
+        recorridoInOrder(nodo->der);
+    }
+}
+
+// Opción 5: Reporte de Estado
+void reporteEstado(struct NodoAVL* raiz) {
+    if (raiz == NULL) {
+        printf("\nNo hay lotes registrados en el sistema.\n");
+        return;
+    }
+    
+    printf("\n=== REPORTE DE ESTADO - RECORRIDO IN-ORDER ===\n");
+    printf("(Listado desde fecha mas proxima a vencer hasta la mas lejana)\n");
+    printf("================================================\n");
+    
+    recorridoInOrder(raiz);
+}
+
+// Liberar toda la memoria del árbol
+void liberarArbol(struct NodoAVL* nodo) {
+    if (nodo != NULL) {
+        // Liberar subárboles primero
+        liberarArbol(nodo->izq);
+        liberarArbol(nodo->der);
+        
+        // Liberar cola FIFO
+        liberarColaFIFO(nodo->cabeza_pedidos);
+        
+        // Liberar nodo
+        free(nodo);
+    }
+}
+
+// ==================== FUNCIÓN PRINCIPAL ====================
+
+int main() {
+    struct NodoAVL* raiz = NULL;
+    int opcion;
+    
+    printf("Bienvenido al Sistema Logistico del Puerto de Buenaventura\n");
+    
+    do {
+        mostrarMenu();
+        if (scanf("%d", &opcion) != 1) {
+            printf("Error: Opcion invalida.\n");
+            limpiarBuffer();
+            continue;
+        }
+        
+        switch (opcion) {
+            case 1:
+                recepcionMercancia(&raiz);
+                break;
+            case 2:
+                registrarPedidoDespacho(raiz);
+                break;
+            case 3:
+                cancelarLoteCompleto(&raiz);
+                break;
+            case 4:
+                cancelarPedidoEspecifico(raiz);
+                break;
+            case 5:
+                reporteEstado(raiz);
+                break;
+            case 6:
+                printf("\nSaliendo del sistema...\n");
+                break;
+            default:
+                printf("\nOpcion invalida. Intente de nuevo.\n");
+                break;
+        }
+        
+        // Pausa para continuar (excepto al salir)
+        if (opcion != 6) {
+            printf("\nPresione Enter para continuar...");
+            limpiarBuffer();
+            getchar();
+        }
+        
+    } while (opcion != 6);
+    
+    // Liberar toda la memoria antes de salir
+    liberarArbol(raiz);
+    
+    printf("Memoria liberada correctamente. ¡Hasta pronto!\n");
+    return 0;
+}
+
+
+jose luis portes cuervo 
+jair caicedo palacios 
